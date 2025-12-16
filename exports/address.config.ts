@@ -27,8 +27,8 @@ export const ADDRESS: ChainAddressMap = {
 		usduStakedVault: '0x0b5281e1fa7fc7c1f0890f311d5f04d55c0fd63c',
 
 		// morpho adapters
-		usduMorphoAdapterV1: '0x6D6525D8e234D840b2699f7107f14fa0D6C62c42', // set to expire
-		usduMorphoAdapterV1_1: '0xab6523Cd7fa669EC35Bd5358dF505382b810CDB5', // set to expire
+		usduMorphoAdapterV1: '0x6D6525D8e234D840b2699f7107f14fa0D6C62c42', // set to expire, deprecated
+		usduMorphoAdapterV1_1: '0xab6523Cd7fa669EC35Bd5358dF505382b810CDB5', // set to expire, deprecated
 		usduMorphoAdapterV1_2: '0xFb46481A9819e068Af0EB64a2C2824FCecAAAA45',
 
 		// morpho core vault market ids
@@ -55,8 +55,8 @@ export const ADDRESS: ChainAddressMap = {
 		curveStableSwapNG_USDUUSDC_2: '0x6C5Ff8DCe52BE77b4eCE6B51996018f0C1713bA9',
 
 		// curve adapters
-		usduCurveAdapterV1_USDC: '0x6f05782a28cDa7f01B054b014cF6cd92023937e4', // set to expire
-		usduCurveAdapterV1_1_USDC: '0x77eBb1D7a7f5371a61b7D21D7734b6dDE6F0f94F',
+		usduCurveAdapterV1_USDC: '0x6f05782a28cDa7f01B054b014cF6cd92023937e4', // set to expire, deprecated
+		usduCurveAdapterV1_1_USDC: '0x77eBb1D7a7f5371a61b7D21D7734b6dDE6F0f94F', // set to expire, deprecated
 		usduCurveAdapterV1_1_USDC_2: '0x77cBb2f180F55dd2916bfC78F879A2C2dE37f638',
 
 		// term-max vaults
