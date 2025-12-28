@@ -156,7 +156,7 @@ contract CurveAdapterV1_2 is RewardDistributionV1 {
 		// transfer split to sender
 		stable.transfer(_msgSender(), split);
 
-		// use remaining balance, eliminate rounding issues
+		// use remaining balance, eliminate dust issues, include transfers
 		uint256 remaining = stable.balanceOf(address(this));
 
 		// verify in profit
@@ -165,7 +165,7 @@ contract CurveAdapterV1_2 is RewardDistributionV1 {
 		// reduce mint
 		uint256 reduced = _reduceMint(toBurn);
 
-		// check for profit > 0, includes also various extra profits
+		// check for actual revenue, includes also various extra profits
 		if (remaining > reduced) {
 			uint256 extraProfit = remaining - reduced;
 			totalRevenue += extraProfit;
@@ -185,11 +185,38 @@ contract CurveAdapterV1_2 is RewardDistributionV1 {
 	// redeem, onlyCurator
 
 	function redeem(uint256 shares, uint256 minAmount) external onlyCurator {
-		pool.remove_liquidity_one_coin(shares, int128(int256(idxS)), minAmount);
-		_reduceMint(stable.balanceOf(address(this)));
+		// store LP balance
+		uint256 beforeLP = pool.balanceOf(address(this));
 
-		// optional distribute remainings
-		_distribute();
+		// remove shares
+		pool.remove_liquidity_one_coin(shares, int128(int256(idxS)), minAmount);
+
+		// get burnable amount form LP balance reduction
+		uint256 afterLP = pool.balanceOf(address(this));
+		uint256 toBurn = calcBurnable(beforeLP, afterLP);
+
+		// use remaining balance, eliminate dust issues, include transfers
+		uint256 remaining = stable.balanceOf(address(this));
+
+		// verify in profit
+		if (remaining < toBurn) revert NotProfitable(remaining, toBurn);
+
+		// reduce mint
+		uint256 reduced = _reduceMint(toBurn);
+
+		// check for actual revenue, includes also various extra profits
+		if (remaining > reduced) {
+			uint256 extraProfit = remaining - reduced;
+			totalRevenue += extraProfit;
+
+			emit Revenue(extraProfit, totalRevenue, totalMinted);
+
+			// distribute balance
+			_distribute();
+		}
+
+		// emit event and return share portion
+		emit RemoveLiquidity(_msgSender(), reduced, totalMinted, shares, afterLP);
 	}
 
 	// ---------------------------------------------------------------------------------------
