@@ -57,6 +57,10 @@ uint256 public immutable idxC;            // Coin index (USDC)
 // Accounting State
 uint256 public totalMinted;               // Total USDU minted (liabilities)
 uint256 public totalRevenue;              // Accumulated protocol profits
+
+// Security Guards
+uint256 public latestBlock;               // Last AtomicGuard operation block
+uint256 public latestReconcile;           // Last reconcile operation block (50k block cooldown)
 ```
 
 ### Key Functions Added/Modified
@@ -64,16 +68,23 @@ uint256 public totalRevenue;              // Accumulated protocol profits
 | Function | Status | Purpose |
 |----------|--------|---------|
 | `totalAssets()` | **NEW** | LP valuation using virtual price |
-| `reconcile()` | **NEW** | Protocol profit realization |
+| `reconcile()` | **NEW** | Protocol profit realization (50k block cooldown) |
 | `redeemLiquidity()` | **NEW** | Curator emergency with debt coverage |
 | `calcBurnable()` | **MODIFIED** | Simplified debt calculation |
 | `_removeLiquidity()` | **ENHANCED** | Actual revenue detection |
+
+### Security Guards
+
+| Guard | Applied To | Purpose |
+|-------|------------|---------|
+| `AtomicGuard` | `addLiquidity`, `removeLiquidity`, `reduceMint` | Prevents MEV/flash loan attacks |
+| `ReconcileGuard` | `reconcile` | 50,000 block (~7 day) cooldown for economic optimization |
 
 ## Core Functionality
 
 ### 1. Asset Valuation (`totalAssets`)
 
-**Location**: `contracts/curve/CurveAdapterV1_2.sol:68-73`
+**Location**: `contracts/curve/CurveAdapterV1_2.sol:138-144`
 
 ```solidity
 function totalAssets() public view returns (uint256) {
@@ -98,9 +109,9 @@ function totalAssets() public view returns (uint256) {
 
 ### 2. Liquidity Addition (`addLiquidity`)
 
-**Location**: `contracts/curve/CurveAdapterV1_2.sol:94-128`
+**Location**: `contracts/curve/CurveAdapterV1_2.sol:233-266`
 
-**Unchanged from V1_1** - maintains proven functionality:
+**Enhanced with AtomicGuard** - maintains proven functionality with MEV protection:
 1. User provides USDC → Adapter mints equivalent USDU
 2. Both tokens added to pool as dual-sided liquidity
 3. LP tokens split 50/50 between user and adapter
@@ -108,14 +119,15 @@ function totalAssets() public view returns (uint256) {
 
 ### 3. Enhanced Liquidity Removal
 
-**Location**: `contracts/curve/CurveAdapterV1_2.sol:143-201`
+**Location**: `contracts/curve/CurveAdapterV1_2.sol:299-370`
 
 #### **User Withdrawal** (`removeLiquidity`)
 ```solidity
-function removeLiquidity(uint256 shares, uint256 minAmount) external returns (uint256) {
+function removeLiquidity(uint256 shares, uint256 minAmount) external AtomicGuard returns (uint256) {
     return _removeLiquidity(shares, minAmount, true);
 }
 ```
+- **AtomicGuard Protection**: Prevents flash loan attacks on removal operations
 
 #### **Curator Emergency** (`redeemLiquidity`)
 ```solidity
@@ -148,24 +160,31 @@ if (remaining > reduced) {
 
 ### 4. Profit Reconciliation (`reconcile`)
 
-**Location**: `contracts/curve/CurveAdapterV1_2.sol:240-266`
+**Location**: `contracts/curve/CurveAdapterV1_2.sol:434-437`
 
 ```solidity
-function reconcile() external returns (uint256) {
-    uint256 assets = totalAssets();
+function reconcile() external ReconcileGuard returns (uint256) {
+    return _reconcile(totalAssets(), false);
+}
+```
+
+**Internal Reconciliation Logic** (`_reconcile`):
+```solidity
+function _reconcile(uint256 assets, bool allowPassing) internal returns (uint256) {
     if (assets > totalMinted) {
         uint256 profit = assets - totalMinted;
+        totalRevenue += profit;
         
         // Mint profit amount to reconcile accounting
         stable.mintModule(address(this), profit);
         totalMinted += profit;
-        totalRevenue += profit;
         
         // Distribute to revenue recipients
         _distribute();
         
         return profit;
     } else {
+        if (allowPassing) return 0;
         revert NothingToReconcile(assets, totalMinted);
     }
 }
@@ -176,6 +195,13 @@ function reconcile() external returns (uint256) {
 - **No LP Withdrawal**: Preserves pool liquidity for users
 - **Immediate Distribution**: Profit flows to recipients automatically
 - **Clean Accounting**: Assets remain as LP tokens, profit distributed as USDU
+- **Economic Timing**: 50,000 block (~7 day) cooldown ensures meaningful profit accumulation
+
+**ReconcileGuard Protection**:
+- **Cooldown Period**: Prevents reconciliation for 50,000 blocks (~7 days)
+- **Economic Efficiency**: Allows sufficient time for LP fee accumulation
+- **Gas Optimization**: Batches profit recognition over longer periods
+- **Anti-Gaming**: Protects against automated profit extraction strategies
 
 ## Accounting Model
 
@@ -210,6 +236,55 @@ EQUITY = Assets - Liabilities (protocol profit)
 2. **Transparent**: Clear profit calculation using market values
 3. **Efficient**: No need to withdraw/redeposit LP tokens
 4. **Scalable**: Works regardless of pool size or composition
+
+## Security Guard System
+
+### AtomicGuard Protection
+
+```solidity
+modifier AtomicGuard() {
+    if (latestBlock == block.number) revert AtomicGuardError();
+    latestBlock = block.number;
+    _;
+}
+```
+
+**Applied to**: `addLiquidity()`, `removeLiquidity()`, `reduceMint()`
+
+**Protection Features**:
+- **MEV Prevention**: Blocks same-block arbitrage opportunities
+- **Flash Loan Defense**: Prevents temporary pool state manipulation
+- **Operation Sequencing**: Ensures proper cross-block operation ordering
+- **Multi-call Protection**: Prevents complex exploit attempts within single transactions
+
+### ReconcileGuard Protection
+
+```solidity
+modifier ReconcileGuard() {
+    if (latestReconcile + 50000 > block.number) revert ReconcileGuardError();
+    latestReconcile = block.number;
+    _;
+}
+```
+
+**Applied to**: `reconcile()`
+
+**Economic Benefits**:
+- **Meaningful Accumulation**: ~7 days allows significant LP fee buildup
+- **Gas Efficiency**: Batches profit recognition reducing transaction costs
+- **Strategic Protection**: Prevents rapid-fire profit extraction
+- **Market Stability**: Gives pool time to generate substantial returns
+
+**Timing Calculation**:
+- **50,000 blocks** × **12 seconds/block** = **600,000 seconds**
+- **600,000 seconds** ÷ **86,400 sec/day** = **~6.94 days**
+
+### Error Handling
+
+```solidity
+error AtomicGuardError();           // Same-block operation attempted
+error ReconcileGuardError();        // Reconcile called before cooldown expires
+```
 
 ## Edge Case Analysis
 
@@ -267,13 +342,13 @@ function redeemLiquidity(uint256 amountToTransfer, uint256 shares, uint256 minAm
 
 ### State-Changing Functions
 
-| Function | Access | Risk Level | Key Features |
-|----------|--------|------------|--------------|
-| `addLiquidity()` | Public | Low | Proven V1_1 logic, imbalance protection |
-| `removeLiquidity()` | Public | Low | Enhanced profit detection, actual balance checks |
-| `reconcile()` | Public | Medium | Mint-and-distribute profit realization |
-| `redeemLiquidity()` | Curator | Medium | Emergency control with debt coverage |
-| `reduceMint()` | Public | Low | Debt reduction, distribution of excess |
+| Function | Access | Guard | Risk Level | Key Features |
+|----------|--------|-------|------------|--------------|
+| `addLiquidity()` | Public | AtomicGuard | Low | Proven V1_1 logic, imbalance protection, MEV defense |
+| `removeLiquidity()` | Public | AtomicGuard | Low | Enhanced profit detection, flash loan protection |
+| `reconcile()` | Public | ReconcileGuard | Medium | Mint-and-distribute, 7-day cooldown |
+| `redeemLiquidity()` | Curator | None | Medium | Emergency control with debt coverage |
+| `reduceMint()` | Public | AtomicGuard | Low | Debt reduction, same-block protection |
 
 ### Error Handling
 
@@ -282,6 +357,8 @@ error ImbalancedVariant(uint256[] balances);     // Pool state violation
 error NotProfitable(uint256 given, uint256 minimum); // Insufficient profit
 error ZeroAmount();                              // Invalid zero input
 error NothingToReconcile(uint256 assets, uint256 minted); // No profit available
+error AtomicGuardError();                        // Same-block operation attempted
+error ReconcileGuardError();                     // Reconcile cooldown not expired
 ```
 
 ## Security Assessment
@@ -293,19 +370,24 @@ error NothingToReconcile(uint256 assets, uint256 minted); // No profit available
 3. **Conservative Logic**: Actual balance verification before operations
 4. **Clear Separations**: User operations vs protocol accounting
 5. **Emergency Controls**: Curator can inject funds if needed
+6. **Multi-Layer Security**: AtomicGuard + ReconcileGuard protection system
+7. **Economic Optimization**: 7-day reconcile cooldown prevents profit drainage
+8. **MEV Protection**: Same-block operation prevention
 
 ### **Risk Matrix**
 
 | Risk Category | Likelihood | Impact | Mitigation |
 |---------------|------------|--------|------------|
-| Virtual Price Manipulation | Low | Medium | Monitor reconcile frequency |
+| Virtual Price Manipulation | Very Low | Medium | ReconcileGuard 7-day cooldown |
 | Precision Errors | Medium | Very Low | Acceptable for simplicity |
 | Curator Abuse | Very Low | Medium | Multi-sig + governance |
-| Pool Imbalance Attacks | Low | Low | Existing V1_1 protections |
+| Pool Imbalance Attacks | Very Low | Low | AtomicGuard + V1_1 protections |
+| MEV/Flash Loan Attacks | Very Low | Low | AtomicGuard prevention |
+| Profit Drainage | Very Low | Low | ReconcileGuard economic protection |
 
 ### **Overall Security Posture**
 
-**Strong** - The simplified design reduces complexity while maintaining core protections. Most risks are inherited from V1_1 (well-tested) or are minor precision issues.
+**Very Strong** - The enhanced guard system significantly improves security over V1_1 while maintaining simplicity. The dual-layer protection (AtomicGuard + ReconcileGuard) addresses modern DeFi attack vectors including MEV and flash loans, while the economic reconcile timing optimizes protocol revenue.
 
 ## Comparison with V1_1
 
@@ -318,10 +400,12 @@ error NothingToReconcile(uint256 assets, uint256 minted); // No profit available
 
 ### **What Improved**
 - ✅ **Asset Tracking**: Added `totalAssets()` using virtual price
-- ✅ **Profit Realization**: Independent `reconcile()` function
+- ✅ **Profit Realization**: Independent `reconcile()` function with 7-day cooldown
 - ✅ **Accounting Clarity**: Simple assets vs liabilities model
 - ✅ **Revenue Detection**: Uses actual vs theoretical balances
 - ✅ **Emergency Controls**: Enhanced curator capabilities
+- ✅ **Security Guards**: AtomicGuard (MEV/flash loan protection) + ReconcileGuard (economic timing)
+- ✅ **Economic Optimization**: 50,000 block reconcile cooldown for meaningful profit accumulation
 
 ### **What Was Simplified**
 - ✅ **Removed Complex Profitability Logic**: No more `calcProfitability()`
@@ -333,6 +417,8 @@ error NothingToReconcile(uint256 assets, uint256 minted); // No profit available
 2. **Enhanced Functionality**: Adds missing features from other adapters
 3. **Maintained Simplicity**: Core principle preserved
 4. **Better Monitoring**: Clear profit tracking and distribution
+5. **Advanced Security**: Multi-layer guard protection against modern DeFi attacks
+6. **Economic Efficiency**: Optimized reconcile timing reduces gas costs and maximizes revenue
 
 ## Usage Examples
 
@@ -343,8 +429,16 @@ uint256 liabilities = adapter.totalMinted(); // Debt in USDU
 int256 equity = int256(assets) - int256(liabilities); // Profit/Loss
 
 if (equity > 0) {
-    // Adapter is profitable - can reconcile
-    adapter.reconcile();
+    // Check if reconcile cooldown has passed (50,000 blocks = ~7 days)
+    uint256 lastReconcile = adapter.latestReconcile();
+    if (lastReconcile + 50000 <= block.number) {
+        // Adapter is profitable and cooldown expired - can reconcile
+        adapter.reconcile();
+    } else {
+        // Profitable but cooldown active - wait for cooldown expiry
+        uint256 blocksRemaining = (lastReconcile + 50000) - block.number;
+        // blocksRemaining * 12 seconds = time until next reconcile allowed
+    }
 } else {
     // Adapter at loss - wait for market recovery
 }
@@ -352,17 +446,24 @@ if (equity > 0) {
 
 ### **User Operations**
 ```solidity
-// Adding liquidity (unchanged from V1_1)
+// Adding liquidity (enhanced with AtomicGuard protection)
 uint256 usdcAmount = 1000e6; // $1000 USDC
 usdc.approve(adapter, usdcAmount);
-uint256 lpTokens = adapter.addLiquidity(usdcAmount, 0);
 
-// Removing liquidity (enhanced error messages)
+try adapter.addLiquidity(usdcAmount, 0) returns (uint256 lpTokens) {
+    // Success - LP tokens received
+} catch AtomicGuardError() {
+    // Failed - another operation happened this block, retry next block
+}
+
+// Removing liquidity (enhanced error handling)
 try adapter.removeLiquidity(lpTokens, 0) returns (uint256 usduReceived) {
     // Success - withdrawal was profitable
 } catch NotProfitable(uint256 given, uint256 minimum) {
     // Failed - not enough profit to cover debt
     // given = actual USDU available, minimum = required debt burn
+} catch AtomicGuardError() {
+    // Failed - another operation happened this block, retry next block
 }
 ```
 
@@ -400,4 +501,4 @@ if (shortfall > 0) {
 
 *Generated for USDU Finance protocol development*  
 *Last Updated: December 2024*  
-*Contract Version: CurveAdapterV1_2.sol*
+*Contract Version: CurveAdapterV1_2.sol with AtomicGuard + ReconcileGuard Security System*

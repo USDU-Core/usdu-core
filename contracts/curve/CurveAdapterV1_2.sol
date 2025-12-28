@@ -48,6 +48,14 @@ contract CurveAdapterV1_2 is RewardDistributionV1 {
 	/// @notice Cumulative revenue generated and distributed by the adapter
 	uint256 public totalRevenue;
 
+	/// @notice Block number of the last operation protected by AtomicGuard
+	/// @dev Prevents multiple state-changing operations within the same block to avoid MEV and flash loan attacks
+	uint256 public latestBlock = 0;
+
+	/// @notice Block number of the last reconcile operation
+	/// @dev Enforces a 50,000 block cooldown (~7 days) between reconcile operations to prevent profit manipulation
+	uint256 public latestReconcile = 0;
+
 	// ---------------------------------------------------------------------------------------
 	// EVENTS
 	// ---------------------------------------------------------------------------------------
@@ -94,6 +102,43 @@ contract CurveAdapterV1_2 is RewardDistributionV1 {
 	/// @param assets Current adapter assets (LP value)
 	/// @param minted Current adapter liabilities (minted debt)
 	error NothingToReconcile(uint256 assets, uint256 minted);
+
+	/// @notice Thrown when attempting multiple operations within the same block
+	error AtomicGuardError();
+
+	/// @notice Thrown when attempting reconcile operation before the 50,000 block cooldown period expires
+	error ReconcileGuardError();
+
+	// ---------------------------------------------------------------------------------------
+
+	/**
+	 * @notice Prevents multiple state-changing operations within the same block
+	 * @dev Critical security feature that:
+	 *      - Prevents MEV attacks by blocking same-block arbitrage opportunities
+	 *      - Stops flash loan attacks that could manipulate pool states temporarily
+	 *      - Ensures operations are properly sequenced across different blocks
+	 *      - Protects against complex multi-call exploits within single transactions
+	 */
+	modifier AtomicGuard() {
+		if (latestBlock == block.number) revert AtomicGuardError();
+		latestBlock = block.number;
+		_;
+	}
+
+	/**
+	 * @notice Enforces a 50,000 block cooldown period between reconcile operations
+	 * @dev Economic protection mechanism that:
+	 *      - Prevents frequent reconciliation that could drain profits prematurely
+	 *      - Allows sufficient time for meaningful LP fee accumulation (~7 days at 12s blocks)
+	 *      - Reduces gas costs by batching profit recognition over longer periods
+	 *      - Protects against automated profit extraction strategies
+	 *      - Ensures reconciliation happens at economically meaningful intervals
+	 */
+	modifier ReconcileGuard() {
+		if (latestReconcile + 50000 > block.number) revert ReconcileGuardError();
+		latestReconcile = block.number;
+		_;
+	}
 
 	// ---------------------------------------------------------------------------------------
 
@@ -184,8 +229,9 @@ contract CurveAdapterV1_2 is RewardDistributionV1 {
 	 *      2. Both tokens added to pool simultaneously
 	 *      3. LP tokens split 50/50 between user and adapter
 	 *      4. Verifies pool stays coin-heavy post-operation
+	 *      Protected by AtomicGuard to prevent MEV exploitation of liquidity additions
 	 */
-	function addLiquidity(uint256 amount, uint256 minShares) external returns (uint256) {
+	function addLiquidity(uint256 amount, uint256 minShares) external AtomicGuard returns (uint256) {
 		// Convert coin amount to equivalent stablecoin amount (decimal normalization)
 		uint256 amountStable = (amount * 1 ether) / 10 ** coin.decimals();
 
@@ -248,9 +294,10 @@ contract CurveAdapterV1_2 is RewardDistributionV1 {
 	 * @param shares Amount of LP tokens to redeem
 	 * @param minAmount Minimum stablecoin amount expected (slippage protection)
 	 * @return Amount of stablecoins received by the user
-	 * @dev Enforces profitability check and imbalance verification
+	 * @dev Enforces profitability check and imbalance verification.
+	 *      Protected by AtomicGuard to prevent flash loan attacks on removal operations
 	 */
-	function removeLiquidity(uint256 shares, uint256 minAmount) external returns (uint256) {
+	function removeLiquidity(uint256 shares, uint256 minAmount) external AtomicGuard returns (uint256) {
 		return _removeLiquidity(shares, minAmount, true);
 	}
 
@@ -334,8 +381,9 @@ contract CurveAdapterV1_2 is RewardDistributionV1 {
 	 * @return Amount of debt actually reduced
 	 * @dev Any excess stablecoins beyond debt are distributed as revenue.
 	 *      Useful for external parties to help maintain adapter health.
+	 *      Protected by AtomicGuard to prevent debt manipulation within single blocks
 	 */
-	function reduceMint(uint256 amount) external returns (uint256) {
+	function reduceMint(uint256 amount) external AtomicGuard returns (uint256) {
 		// Transfer stablecoins from caller
 		stable.safeTransferFrom(_msgSender(), address(this), amount);
 
@@ -382,8 +430,9 @@ contract CurveAdapterV1_2 is RewardDistributionV1 {
 	 * @dev Uses mint-and-distribute strategy: mints stablecoins equal to profit,
 	 *      updates debt to match assets, then distributes the profit immediately.
 	 *      This preserves LP tokens while realizing profits for the protocol.
+	 *      Protected by ReconcileGuard with 50,000 block cooldown to ensure economically meaningful intervals
 	 */
-	function reconcile() external returns (uint256) {
+	function reconcile() external ReconcileGuard returns (uint256) {
 		return _reconcile(totalAssets(), false);
 	}
 

@@ -68,7 +68,7 @@ const config: HardhatUserConfig = {
 			},
 			gas: 'auto',
 			gasPrice: 'auto',
-			initialBaseFeePerGas: 100000000,
+			// initialBaseFeePerGas: 100000000,
 			gasMultiplier: 2,
 		},
 		tenderly: {
