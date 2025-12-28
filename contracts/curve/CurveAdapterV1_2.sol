@@ -89,6 +89,7 @@ contract CurveAdapterV1_2 is RewardDistributionV1 {
 
 	// ---------------------------------------------------------------------------------------
 
+	// Enables users to add liquidity via the adapter when specific conditions are met
 	function addLiquidity(uint256 amount, uint256 minShares) external returns (uint256) {
 		// scale up to 18 decimals
 		uint256 amountStable = (amount * 1 ether) / 10 ** coin.decimals();
@@ -121,6 +122,8 @@ contract CurveAdapterV1_2 is RewardDistributionV1 {
 
 		// emit event and return share split
 		emit AddLiquidity(_msgSender(), amountStable, totalMinted, split, pool.balanceOf(address(this)));
+
+		// return share split
 		return split;
 	}
 
@@ -136,27 +139,44 @@ contract CurveAdapterV1_2 is RewardDistributionV1 {
 
 	// ---------------------------------------------------------------------------------------
 
+	// Enables users to remove liquidity via the adapter when specific conditions are met
 	function removeLiquidity(uint256 shares, uint256 minAmount) external returns (uint256) {
+		return _removeLiquidity(shares, minAmount, true);
+	}
+
+	// Enables the curator to top up funds to maintain adapter profitability and
+	// redeem liquidity without imbalance checks, provided outstanding debt is covered
+	function redeemLiquidity(uint256 amountToTransfer, uint256 shares, uint256 minAmount) external onlyCurator returns (uint256) {
+		stable.safeTransferFrom(_msgSender(), address(this), amountToTransfer);
+		return _removeLiquidity(shares, minAmount, false);
+	}
+
+	function _removeLiquidity(uint256 shares, uint256 minAmount, bool toSplit) internal returns (uint256 split) {
 		// store LP balance
 		uint256 beforeLP = pool.balanceOf(address(this));
 
-		// transfer LP shares from sender, needs approval
-		pool.transferFrom(_msgSender(), address(this), shares);
+		if (toSplit) {
+			// transfer LP shares from sender, needs approval
+			pool.transferFrom(_msgSender(), address(this), shares);
 
-		// remove both shares and get split
-		uint256 split = pool.remove_liquidity_one_coin(shares * 2, int128(int256(idxS)), minAmount * 2) / 2;
+			// remove both shares and get split
+			split = pool.remove_liquidity_one_coin(shares * 2, int128(int256(idxS)), minAmount * 2) / 2;
 
-		// verify imbalance for coin
-		verifyImbalance(false);
+			// verify imbalance for coin
+			verifyImbalance(false);
+
+			// transfer split to sender
+			stable.transfer(_msgSender(), split);
+		} else {
+			// remove shares of adapter, no imbalance checks
+			pool.remove_liquidity_one_coin(shares, int128(int256(idxS)), minAmount);
+		}
 
 		// get burnable amount form LP balance reduction
 		uint256 afterLP = pool.balanceOf(address(this));
 		uint256 toBurn = calcBurnable(beforeLP, afterLP);
 
-		// transfer split to sender
-		stable.transfer(_msgSender(), split);
-
-		// use remaining balance, eliminate dust issues, include transfers
+		// use remaining balance, eliminate dust issues, includes transfers
 		uint256 remaining = stable.balanceOf(address(this));
 
 		// verify in profit
@@ -165,53 +185,14 @@ contract CurveAdapterV1_2 is RewardDistributionV1 {
 		// reduce mint
 		uint256 reduced = _reduceMint(toBurn);
 
-		// check for actual revenue, includes also various extra profits
+		// check for actual revenue, might include also various extra profits
 		if (remaining > reduced) {
-			uint256 extraProfit = remaining - reduced;
-			totalRevenue += extraProfit;
+			uint256 revenue = remaining - reduced;
+			totalRevenue += revenue;
 
-			emit Revenue(extraProfit, totalRevenue, totalMinted);
+			emit Revenue(revenue, totalRevenue, totalMinted);
 
-			// distribute balance
-			_distribute();
-		}
-
-		// emit event and return share portion
-		emit RemoveLiquidity(_msgSender(), reduced, totalMinted, shares, afterLP);
-		return split;
-	}
-
-	// ---------------------------------------------------------------------------------------
-	// redeem, onlyCurator
-
-	function redeem(uint256 shares, uint256 minAmount) external onlyCurator {
-		// store LP balance
-		uint256 beforeLP = pool.balanceOf(address(this));
-
-		// remove shares
-		pool.remove_liquidity_one_coin(shares, int128(int256(idxS)), minAmount);
-
-		// get burnable amount form LP balance reduction
-		uint256 afterLP = pool.balanceOf(address(this));
-		uint256 toBurn = calcBurnable(beforeLP, afterLP);
-
-		// use remaining balance, eliminate dust issues, include transfers
-		uint256 remaining = stable.balanceOf(address(this));
-
-		// verify in profit
-		if (remaining < toBurn) revert NotProfitable(remaining, toBurn);
-
-		// reduce mint
-		uint256 reduced = _reduceMint(toBurn);
-
-		// check for actual revenue, includes also various extra profits
-		if (remaining > reduced) {
-			uint256 extraProfit = remaining - reduced;
-			totalRevenue += extraProfit;
-
-			emit Revenue(extraProfit, totalRevenue, totalMinted);
-
-			// distribute balance
+			// distribute revenue
 			_distribute();
 		}
 
@@ -220,14 +201,17 @@ contract CurveAdapterV1_2 is RewardDistributionV1 {
 	}
 
 	// ---------------------------------------------------------------------------------------
-	// allow anyone to reduce mint (debt), needs approval
+	// allow anyone to reduce mint (debt of adapter), needs approval
 
-	function reduceMint(uint256 amount) external {
+	function reduceMint(uint256 amount) external returns (uint256) {
 		stable.safeTransferFrom(_msgSender(), address(this), amount);
-		_reduceMint(stable.balanceOf(address(this)));
+		uint256 reduced = _reduceMint(stable.balanceOf(address(this)));
 
 		// optional distribute remainings
 		_distribute();
+
+		// return reduction
+		return reduced;
 	}
 
 	function _reduceMint(uint256 amount) internal returns (uint256) {
@@ -253,8 +237,8 @@ contract CurveAdapterV1_2 is RewardDistributionV1 {
 
 	// ---------------------------------------------------------------------------------------
 
-	function reconcile() external {
-		_reconcile(totalAssets(), false);
+	function reconcile() external returns (uint256) {
+		return _reconcile(totalAssets(), false);
 	}
 
 	function _reconcile(uint256 assets, bool allowPassing) internal returns (uint256) {
@@ -271,6 +255,7 @@ contract CurveAdapterV1_2 is RewardDistributionV1 {
 			// distribute balance
 			_distribute();
 
+			// return mint amount
 			return mintToReconcile;
 		} else {
 			if (allowPassing) {
