@@ -14,41 +14,101 @@ import {ICurveStableSwapNG} from './helpers/ICurveStableSwapNG.sol';
 /**
  * @title CurveAdapterV1_2
  * @author @samclassix <samclassix@proton.me>
- * @notice This is an adapter for interacting with ICurveStableSwapNG to mint liquidity straight into the pool under certain conditions.
+ * @notice Enhanced Curve StableSwapNG adapter enabling dual-sided liquidity provision with automated profit reconciliation.
+ *         Maintains simple accounting (Assets = LP value via virtual price, Liabilities = totalMinted) while providing
+ *         protocol-level profit tracking and distribution capabilities.
+ *
+ * @dev Key Features:
+ *      - Dual-token liquidity addition (User provides coin, adapter mints stablecoin)
+ *      - Imbalance-protected operations (only when pool conditions are favorable)
+ *      - Virtual price-based asset valuation for accurate LP token accounting
+ *      - Independent profit reconciliation via mint-and-distribute mechanism
+ *      - Emergency controls with debt coverage capabilities
  */
 contract CurveAdapterV1_2 is RewardDistributionV1 {
 	using Math for uint256;
 	using SafeERC20 for IERC20Metadata;
 	using SafeERC20 for Stablecoin;
 
+	/// @notice The Curve StableSwapNG pool this adapter interfaces with
 	ICurveStableSwapNG public immutable pool;
+
+	/// @notice The external token (e.g., USDC) that users deposit
 	IERC20Metadata public immutable coin;
 
+	/// @notice Index of the stablecoin (USDU) in the pool (0 or 1)
 	uint256 public immutable idxS;
+
+	/// @notice Index of the external coin (USDC) in the pool (0 or 1)
 	uint256 public immutable idxC;
 
+	/// @notice Total amount of stablecoins minted by this adapter (protocol liabilities)
 	uint256 public totalMinted;
+
+	/// @notice Cumulative revenue generated and distributed by the adapter
 	uint256 public totalRevenue;
 
 	// ---------------------------------------------------------------------------------------
+	// EVENTS
+	// ---------------------------------------------------------------------------------------
 
+	/// @notice Emitted when a user adds liquidity through the adapter
+	/// @param sender The user who added liquidity
+	/// @param minted Amount of stablecoins minted for the operation
+	/// @param totalMinted New total of minted stablecoins
+	/// @param sharesMinted LP tokens received by the user
+	/// @param totalShares Total LP tokens held by the adapter
 	event AddLiquidity(address indexed sender, uint256 minted, uint256 totalMinted, uint256 sharesMinted, uint256 totalShares);
+
+	/// @notice Emitted when a user removes liquidity through the adapter
+	/// @param sender The user who removed liquidity
+	/// @param burned Amount of debt burned during the operation
+	/// @param totalMinted New total of minted stablecoins
+	/// @param sharesBurned LP tokens used in the operation
+	/// @param totalShares Total LP tokens remaining with the adapter
 	event RemoveLiquidity(address indexed sender, uint256 burned, uint256 totalMinted, uint256 sharesBurned, uint256 totalShares);
+
+	/// @notice Emitted when protocol revenue is generated and distributed
+	/// @param amount Amount of revenue generated in this operation
+	/// @param totalRevenue New cumulative total revenue
+	/// @param totalMinted Total minted after revenue reconciliation
 	event Revenue(uint256 amount, uint256 totalRevenue, uint256 totalMinted);
 
 	// ---------------------------------------------------------------------------------------
+	// CUSTOM ERRORS
+	// ---------------------------------------------------------------------------------------
 
+	/// @notice Thrown when pool imbalance state doesn't match operation requirements
+	/// @param balances Current pool balances [stablecoin, coin]
 	error ImbalancedVariant(uint256[] balances);
+
+	/// @notice Thrown when a liquidity removal operation would not be profitable
+	/// @param given Actual USDU balance available
+	/// @param minimum Required USDU amount to cover debt
 	error NotProfitable(uint256 given, uint256 minimum);
+
+	/// @notice Thrown when attempting operations with zero amounts
 	error ZeroAmount();
+
+	/// @notice Thrown when reconciliation is called but no profit exists to distribute
+	/// @param assets Current adapter assets (LP value)
+	/// @param minted Current adapter liabilities (minted debt)
 	error NothingToReconcile(uint256 assets, uint256 minted);
 
 	// ---------------------------------------------------------------------------------------
 
+	/**
+	 * @notice Initializes the CurveAdapterV1_2 with pool configuration and revenue distribution setup
+	 * @param _pool The Curve StableSwapNG pool address to interface with
+	 * @param _idxS Index of the stablecoin in the pool (must be 0 or 1)
+	 * @param _idxC Index of the external coin in the pool (must be 0 or 1)
+	 * @param _receivers Array of addresses to receive distributed profits (up to 5)
+	 * @param _weights Corresponding weights for profit distribution (proportional splits)
+	 */
 	constructor(
 		ICurveStableSwapNG _pool,
-		uint256 _idxS, // IStablecoin
-		uint256 _idxC, // IERC20 coin
+		uint256 _idxS,
+		uint256 _idxC,
 		address[5] memory _receivers,
 		uint32[5] memory _weights
 	) RewardDistributionV1(Stablecoin(_pool.coins(_idxS)), _receivers, _weights) {
@@ -64,200 +124,292 @@ contract CurveAdapterV1_2 is RewardDistributionV1 {
 	}
 
 	// ---------------------------------------------------------------------------------------
+	// ASSET VALUATION
+	// ---------------------------------------------------------------------------------------
 
+	/**
+	 * @notice Calculates the total asset value of the adapter using Curve's virtual price mechanism
+	 * @return Total assets in stablecoin terms (18 decimals)
+	 * @dev Uses get_virtual_price() which accounts for:
+	 *      - Accumulated trading fees (LP appreciation)
+	 *      - Current pool composition and ratios
+	 *      - Standard DeFi LP valuation methodology
+	 */
 	function totalAssets() public view returns (uint256) {
 		uint256 adapterLP = pool.balanceOf(address(this));
 		if (adapterLP == 0) return 0;
 
+		// Virtual price represents value per LP token including accumulated fees
 		return (adapterLP * pool.get_virtual_price()) / 1 ether;
 	}
 
 	// ---------------------------------------------------------------------------------------
+	// POOL IMBALANCE MANAGEMENT
+	// ---------------------------------------------------------------------------------------
 
+	/**
+	 * @notice Checks if the pool is in a state favorable for dual-sided liquidity addition
+	 * @return true if pool is "coin-heavy" (stablecoin balance ≤ normalized coin balance)
+	 * @dev Normalizes coin balance to 18 decimals for proper comparison.
+	 *      When true, adding both tokens simultaneously should be profitable.
+	 */
 	function checkImbalance() public view returns (bool) {
+		// Normalize coin balance to 18 decimals for comparison
 		uint256 correctedAmount = (pool.balances(idxC) * 1 ether) / 10 ** coin.decimals();
-		if (pool.balances(idxS) <= correctedAmount) {
-			return true;
-		} else {
-			return false;
-		}
+
+		// Pool is favorable when stablecoin balance is less than or equal to coin balance
+		return pool.balances(idxS) <= correctedAmount;
 	}
 
+	/**
+	 * @notice Verifies that the pool imbalance state matches the expected condition
+	 * @param state Expected imbalance state (true = coin-heavy, false = stablecoin-heavy)
+	 * @dev Reverts with current pool balances if the state doesn't match expectation
+	 */
 	function verifyImbalance(bool state) public view {
 		if (checkImbalance() != state) revert ImbalancedVariant(pool.get_balances());
 	}
 
 	// ---------------------------------------------------------------------------------------
+	// LIQUIDITY PROVISION
+	// ---------------------------------------------------------------------------------------
 
-	// Enables users to add liquidity via the adapter when specific conditions are met
+	/**
+	 * @notice Enables users to add liquidity via dual-sided provision when pool conditions are favorable
+	 * @param amount Amount of external coin (e.g., USDC) to deposit
+	 * @param minShares Minimum LP tokens the user expects to receive (slippage protection)
+	 * @return LP tokens received by the user (50% of total minted)
+	 * @dev Process:
+	 *      1. User provides coin → Adapter mints equivalent stablecoin
+	 *      2. Both tokens added to pool simultaneously
+	 *      3. LP tokens split 50/50 between user and adapter
+	 *      4. Verifies pool stays coin-heavy post-operation
+	 */
 	function addLiquidity(uint256 amount, uint256 minShares) external returns (uint256) {
-		// scale up to 18 decimals
+		// Convert coin amount to equivalent stablecoin amount (decimal normalization)
 		uint256 amountStable = (amount * 1 ether) / 10 ** coin.decimals();
 
-		// transfer coin token, needs approval
+		// Transfer user's coin tokens (requires prior approval)
 		coin.safeTransferFrom(_msgSender(), address(this), amount);
 
-		// mint the same amountStable in stables
+		// Mint equivalent stablecoins to match the deposit
 		stable.mintModule(address(this), amountStable);
 		totalMinted += amountStable;
 
-		// approve tokens
+		// Approve both tokens for pool interaction
 		stable.forceApprove(address(pool), amountStable);
 		coin.forceApprove(address(pool), amount);
 
-		// prepare amounts
+		// Prepare dual-token amounts for pool
 		uint256[] memory amounts = new uint256[](2);
 		amounts[idxS] = amountStable;
 		amounts[idxC] = amount;
 
-		// provide liquidity
+		// Add liquidity to pool with doubled minimum (since we're adding both sides)
 		uint256 shares = pool.add_liquidity(amounts, minShares * 2);
 
-		// verify imbalance for stable
+		// Verify pool is still in favorable state (coin-heavy after our addition)
 		verifyImbalance(true);
 
-		// return sender's split of shares
+		// Give user half of the LP tokens, adapter keeps the other half
 		uint256 split = shares / 2;
 		pool.transfer(_msgSender(), split);
 
-		// emit event and return share split
+		// Emit event for tracking and return user's share
 		emit AddLiquidity(_msgSender(), amountStable, totalMinted, split, pool.balanceOf(address(this)));
-
-		// return share split
 		return split;
 	}
 
 	// ---------------------------------------------------------------------------------------
+	// DEBT CALCULATION UTILITIES
+	// ---------------------------------------------------------------------------------------
 
+	/**
+	 * @notice Calculates the amount of debt that should be burned based on LP token reduction
+	 * @param beforeLP LP token balance before the operation
+	 * @param afterLP LP token balance after the operation
+	 * @return Amount of stablecoins to burn (proportional to LP reduction)
+	 * @dev Uses proportional logic: if LP tokens reduce by X%, burn X% of totalMinted
+	 */
 	function calcBurnable(uint256 beforeLP, uint256 afterLP) public view returns (uint256) {
-		// scaled to 1e18
+		// Calculate the proportional reduction ratio (scaled to 1e18)
 		uint256 calcBurnableRatio = (1 ether - ((afterLP * 1 ether) / beforeLP));
 
-		// returns scaled by totalMinted aka burn amount
+		// Apply ratio to total minted debt to get burn amount
 		return (calcBurnableRatio * totalMinted) / 1 ether;
 	}
 
 	// ---------------------------------------------------------------------------------------
+	// LIQUIDITY REMOVAL
+	// ---------------------------------------------------------------------------------------
 
-	// Enables users to remove liquidity via the adapter when specific conditions are met
+	/**
+	 * @notice Enables users to remove liquidity when conditions are profitable
+	 * @param shares Amount of LP tokens to redeem
+	 * @param minAmount Minimum stablecoin amount expected (slippage protection)
+	 * @return Amount of stablecoins received by the user
+	 * @dev Enforces profitability check and imbalance verification
+	 */
 	function removeLiquidity(uint256 shares, uint256 minAmount) external returns (uint256) {
 		return _removeLiquidity(shares, minAmount, true);
 	}
 
-	// Enables the curator to top up funds to maintain adapter profitability and
-	// redeem liquidity without imbalance checks, provided outstanding debt is covered
+	/**
+	 * @notice Emergency function allowing curator to redeem liquidity with debt coverage
+	 * @param amountToTransfer Stablecoin amount curator provides to cover potential shortfall
+	 * @param shares LP tokens to redeem from adapter's holdings
+	 * @param minAmount Minimum stablecoin amount expected from redemption
+	 * @return Amount redeemed (not returned to curator since this is emergency management)
+	 * @dev Bypasses imbalance checks since curator is providing debt coverage
+	 */
 	function redeemLiquidity(uint256 amountToTransfer, uint256 shares, uint256 minAmount) external onlyCurator returns (uint256) {
+		// Curator provides stablecoins to cover any potential debt shortfall
 		stable.safeTransferFrom(_msgSender(), address(this), amountToTransfer);
 		return _removeLiquidity(shares, minAmount, false);
 	}
 
+	/**
+	 * @dev Internal function handling both user and curator liquidity removal
+	 * @param shares LP tokens to remove
+	 * @param minAmount Minimum amount expected from removal
+	 * @param toSplit true for user operations (with checks), false for curator emergency
+	 * @return split How much got split with the user
+	 */
 	function _removeLiquidity(uint256 shares, uint256 minAmount, bool toSplit) internal returns (uint256 split) {
-		// store LP balance
+		// Record LP balance before operation for debt calculation
 		uint256 beforeLP = pool.balanceOf(address(this));
 
 		if (toSplit) {
-			// transfer LP shares from sender, needs approval
+			// User operation: transfer user's LP tokens and give them half the withdrawn amount
 			pool.transferFrom(_msgSender(), address(this), shares);
 
-			// remove both shares and get split
+			// Withdraw double the user's LP tokens as stablecoins, give user half
 			split = pool.remove_liquidity_one_coin(shares * 2, int128(int256(idxS)), minAmount * 2) / 2;
 
-			// verify imbalance for coin
+			// Verify pool becomes stablecoin-heavy (favorable for withdrawal)
 			verifyImbalance(false);
 
-			// transfer split to sender
+			// Transfer user's portion
 			stable.transfer(_msgSender(), split);
 		} else {
-			// remove shares of adapter, no imbalance checks
+			// Curator emergency: redeem adapter's LP tokens directly
 			pool.remove_liquidity_one_coin(shares, int128(int256(idxS)), minAmount);
 		}
 
-		// get burnable amount form LP balance reduction
+		// Calculate debt to burn based on LP reduction
 		uint256 afterLP = pool.balanceOf(address(this));
 		uint256 toBurn = calcBurnable(beforeLP, afterLP);
 
-		// use remaining balance, eliminate dust issues, includes transfers
+		// Check actual stablecoin balance (includes any injection)
 		uint256 remaining = stable.balanceOf(address(this));
 
-		// verify in profit
+		// Ensure operation is profitable (enough stablecoins to cover debt)
 		if (remaining < toBurn) revert NotProfitable(remaining, toBurn);
 
-		// reduce mint
+		// Burn the required debt amount
 		uint256 reduced = _reduceMint(toBurn);
 
-		// check for actual revenue, might include also various extra profits
+		// Detect and distribute any actual revenue (excess beyond debt coverage)
 		if (remaining > reduced) {
 			uint256 revenue = remaining - reduced;
 			totalRevenue += revenue;
 
 			emit Revenue(revenue, totalRevenue, totalMinted);
 
-			// distribute revenue
+			// Distribute profit to configured recipients
 			_distribute();
 		}
 
-		// emit event and return share portion
+		// Emit tracking event
 		emit RemoveLiquidity(_msgSender(), reduced, totalMinted, shares, afterLP);
 	}
 
 	// ---------------------------------------------------------------------------------------
-	// allow anyone to reduce mint (debt of adapter), needs approval
+	// DEBT MANAGEMENT
+	// ---------------------------------------------------------------------------------------
 
+	/**
+	 * @notice Allows anyone to reduce adapter debt by providing stablecoins
+	 * @param amount Amount of stablecoins to contribute for debt reduction
+	 * @return Amount of debt actually reduced
+	 * @dev Any excess stablecoins beyond debt are distributed as revenue.
+	 *      Useful for external parties to help maintain adapter health.
+	 */
 	function reduceMint(uint256 amount) external returns (uint256) {
+		// Transfer stablecoins from caller
 		stable.safeTransferFrom(_msgSender(), address(this), amount);
+
+		// Reduce debt by all available balance
 		uint256 reduced = _reduceMint(stable.balanceOf(address(this)));
 
-		// optional distribute remainings
+		// Distribute any remaining balance as revenue
 		_distribute();
 
-		// return reduction
 		return reduced;
 	}
 
+	/**
+	 * @dev Internal function to burn stablecoins and reduce totalMinted debt
+	 * @param amount Amount of stablecoins available to burn
+	 * @return Amount of debt actually reduced
+	 */
 	function _reduceMint(uint256 amount) internal returns (uint256) {
-		// dont allow zero amount
 		if (amount == 0) revert ZeroAmount();
 
-		// reduce max. the totalMinted amount
+		// Can only reduce up to the current debt amount
 		uint256 reduce = totalMinted <= amount ? totalMinted : amount;
 
-		// burn all or partially
 		if (totalMinted == reduce) {
+			// Full debt payoff
 			stable.burn(totalMinted);
 			totalMinted = 0;
 		} else {
-			// fallback, burn partially
+			// Partial debt reduction
 			stable.burn(reduce);
 			totalMinted -= reduce;
 		}
 
-		// return reduction
 		return reduce;
 	}
 
 	// ---------------------------------------------------------------------------------------
+	// PROFIT RECONCILIATION
+	// ---------------------------------------------------------------------------------------
 
+	/**
+	 * @notice Reconciles protocol profits when adapter assets exceed liabilities
+	 * @return Amount of profit reconciled and distributed
+	 * @dev Uses mint-and-distribute strategy: mints stablecoins equal to profit,
+	 *      updates debt to match assets, then distributes the profit immediately.
+	 *      This preserves LP tokens while realizing profits for the protocol.
+	 */
 	function reconcile() external returns (uint256) {
 		return _reconcile(totalAssets(), false);
 	}
 
+	/**
+	 * @dev Internal reconciliation with optional passing (for future use)
+	 * @param assets Current total asset value
+	 * @param allowPassing If true, returns 0 when no profit; if false, reverts
+	 * @return Amount of profit reconciled
+	 */
 	function _reconcile(uint256 assets, bool allowPassing) internal returns (uint256) {
 		if (assets > totalMinted) {
-			// calc revenue
+			// Calculate profit: Assets (LP value) - Liabilities (minted debt)
 			uint256 mintToReconcile = assets - totalMinted;
 			totalRevenue += mintToReconcile;
 
-			// mint revenue to reconcile
+			// Mint stablecoins equal to profit to balance the books
 			stable.mintModule(address(this), mintToReconcile);
 			totalMinted += mintToReconcile;
 			emit Revenue(mintToReconcile, totalRevenue, totalMinted);
 
-			// distribute balance
+			// Distribute the newly minted profit to configured recipients
 			_distribute();
 
-			// return mint amount
 			return mintToReconcile;
 		} else {
+			// No profit available for reconciliation
 			if (allowPassing) {
 				return 0;
 			} else {
