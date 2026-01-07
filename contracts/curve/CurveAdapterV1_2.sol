@@ -48,9 +48,6 @@ contract CurveAdapterV1_2 is RewardDistributionV1 {
 	/// @notice Cumulative revenue generated and distributed by the adapter
 	uint256 public totalRevenue;
 
-	/// @notice Block number of the last operation protected by AtomicGuard
-	/// @dev Prevents multiple state-changing operations within the same block to avoid MEV and flash loan attacks
-	uint256 public latestBlock = 0;
 
 	/// @notice Block number of the last reconcile operation
 	/// @dev Enforces a 50,000 block cooldown (~7 days) between reconcile operations to prevent profit manipulation
@@ -103,27 +100,12 @@ contract CurveAdapterV1_2 is RewardDistributionV1 {
 	/// @param minted Current adapter liabilities (minted debt)
 	error NothingToReconcile(uint256 assets, uint256 minted);
 
-	/// @notice Thrown when attempting multiple operations within the same block
-	error AtomicGuardError();
 
 	/// @notice Thrown when attempting reconcile operation before the 50,000 block cooldown period expires
 	error ReconcileGuardError();
 
 	// ---------------------------------------------------------------------------------------
 
-	/**
-	 * @notice Prevents multiple state-changing operations within the same block
-	 * @dev Critical security feature that:
-	 *      - Prevents MEV attacks by blocking same-block arbitrage opportunities
-	 *      - Stops flash loan attacks that could manipulate pool states temporarily
-	 *      - Ensures operations are properly sequenced across different blocks
-	 *      - Protects against complex multi-call exploits within single transactions
-	 */
-	modifier AtomicGuard() {
-		if (latestBlock == block.number) revert AtomicGuardError();
-		latestBlock = block.number;
-		_;
-	}
 
 	/**
 	 * @notice Enforces a 50,000 block cooldown period between reconcile operations
@@ -229,9 +211,8 @@ contract CurveAdapterV1_2 is RewardDistributionV1 {
 	 *      2. Both tokens added to pool simultaneously
 	 *      3. LP tokens split 50/50 between user and adapter
 	 *      4. Verifies pool stays coin-heavy post-operation
-	 *      Protected by AtomicGuard to prevent MEV exploitation of liquidity additions
 	 */
-	function addLiquidity(uint256 amount, uint256 minShares) external AtomicGuard returns (uint256) {
+	function addLiquidity(uint256 amount, uint256 minShares) external returns (uint256) {
 		// Convert coin amount to equivalent stablecoin amount (decimal normalization)
 		uint256 amountStable = (amount * 1 ether) / 10 ** coin.decimals();
 
@@ -295,9 +276,8 @@ contract CurveAdapterV1_2 is RewardDistributionV1 {
 	 * @param minAmount Minimum stablecoin amount expected (slippage protection)
 	 * @return Amount of stablecoins received by the user
 	 * @dev Enforces profitability check and imbalance verification.
-	 *      Protected by AtomicGuard to prevent flash loan attacks on removal operations
 	 */
-	function removeLiquidity(uint256 shares, uint256 minAmount) external AtomicGuard returns (uint256) {
+	function removeLiquidity(uint256 shares, uint256 minAmount) external returns (uint256) {
 		return _removeLiquidity(shares, minAmount, true);
 	}
 
@@ -310,8 +290,10 @@ contract CurveAdapterV1_2 is RewardDistributionV1 {
 	 * @dev Bypasses imbalance checks since curator is providing debt coverage
 	 */
 	function redeemLiquidity(uint256 amountToTransfer, uint256 shares, uint256 minAmount) external onlyCurator returns (uint256) {
-		// Curator provides stablecoins to cover any potential debt shortfall
-		stable.safeTransferFrom(_msgSender(), address(this), amountToTransfer);
+		if (amountToTransfer != 0) {
+			// Curator provides stablecoins to cover any potential debt shortfall
+			stable.safeTransferFrom(_msgSender(), address(this), amountToTransfer);
+		}
 		return _removeLiquidity(shares, minAmount, false);
 	}
 
@@ -381,11 +363,12 @@ contract CurveAdapterV1_2 is RewardDistributionV1 {
 	 * @return Amount of debt actually reduced
 	 * @dev Any excess stablecoins beyond debt are distributed as revenue.
 	 *      Useful for external parties to help maintain adapter health.
-	 *      Protected by AtomicGuard to prevent debt manipulation within single blocks
 	 */
-	function reduceMint(uint256 amount) external AtomicGuard returns (uint256) {
-		// Transfer stablecoins from caller
-		stable.safeTransferFrom(_msgSender(), address(this), amount);
+	function reduceMint(uint256 amount) external returns (uint256) {
+		if (amount != 0) {
+			// Transfer stablecoins from caller
+			stable.safeTransferFrom(_msgSender(), address(this), amount);
+		}
 
 		// Reduce debt by all available balance
 		uint256 reduced = _reduceMint(stable.balanceOf(address(this)));
