@@ -1,244 +1,122 @@
-# Core
+# USDU Finance - Core Smart Contracts
 
-### Yarn Package Scripts
+Core smart contract implementation for USDU Finance, a stablecoin protocol built on Ethereum. This repository contains the essential contracts for the USDU stablecoin, yield-generating vault adapters, and reward distribution system.
 
-```json
-// yarn run <command> args...
+## Overview
 
-"wallet": "npx ts-node helper/wallet.info.ts",
-"wallet:info": "npx ts-node helper/wallet.info.ts",
+**Key Components:**
 
-"compile": "npx hardhat compile",
-"test": "npx hardhat test",
-"coverage": "npx hardhat coverage",
+-   **USDU Stablecoin**: ERC20 stablecoin with role-based governance
+-   **Vault Adapters**: TermMax, Morpho & Curve integrations for borrow & lending market and deep liquidity
+-   **Reward System**: Token distribution and staking rewards
+-   **TermMax Integration**: Advanced yield optimization strategies
 
-"deploy": "npx hardhat ignition deploy",
-"verify": "npx hardhat verify",
-
-"npm:build": "tsup",
-"npm:publish": "npm publish --access public"
-```
-
-### 1. Install dependencies
-
-`yarn install`
-
-### 2. Set Environment
-
-> See .env.example
-
-```JSON
-file: .env
-
-DEPLOYER_SEED="test test test test test test test test test test test junk"
-DEPLOYER_SEED_INDEX=1
-ALCHEMY_RPC_KEY=...
-ETHERSCAN_API=...
-```
-
-> Create new session or re-navigate to the current directory, to make sure environment is loaded from `.env`
-
-### 3. Develop Smart Contracts
-
-> Develop your contracts in the `/contracts` directory and compile with:
-
-```Bash
-yarn run compile					# Compiles all contracts
-```
-
-### 4. Testing
-
-> All test files are located in /test directory. Run tests using:
-
-```Bash
-yarn run test                    	# Run all tests
-yarn run test test/Membership.ts 	# Run specific test file
-yarn run coverage               	# Generate test coverage report
-```
-
-### 5. Write Deployment Scripts (via ignition deploy and verify)
-
--   Create new `/ignition/params/[file].ts` for type conform deployment params
--   Create new `/ignition/module/[file].ts` for workflow of deployment
-
-> Deployment modules are located in `/ignition/modules`. Deploy your contracts:
-
-```Bash
-yarn run deploy ignition/modules/MembershipFactory.ts --network polygon --verify --deployment-id Membership01
-
---> increase: deployment-id
-```
-
-This will:
-
--   Compile and deploy contracts
--   Verify on Etherscan and Sourcify
--   Generate deployment artifacts in `/ignition/deployments`
-
-Verify:
-
--   verifies contract on etherscan
--   verifies contract on sourcify
-
-Key deployment files:
-
--   deployed_addresses.json: Contains contract addresses
--   journal.json: Detailed deployment logs
-
--   creates deployment artifacts in /ignition`/deployments` directory
--   creates ./ignition/deployments/[deployment]/`deployed_addresses.json`
--   creates ./ignition/deployments/[deployment]/`journal.jsonl`
--   creates constructor-args in /ignition`/constructor-args` directory, as JS module export
-
-### 5.1 Example
-
-```Bash
-✔ Confirm deploy to network polygon (137)? … yes
-{
-  message: 'Config Info: Deploying Module with accounts',
-  admin: '0xb687FE7E47774B22F10Ca5E747496d81827167E3',
-  executor: '0xBdae8D35EDe5bc5174E805DcBe3F7714d142DAAb',
-  member: '0x2ACf17C04F1d8BE7E9D5529894DCee86bf2fcdC3'
-}
-Constructor Args
-[
-  '0xb687FE7E47774B22F10Ca5E747496d81827167E3',
-  '0xBdae8D35EDe5bc5174E805DcBe3F7714d142DAAb',
-  '0x2ACf17C04F1d8BE7E9D5529894DCee86bf2fcdC3'
-]
-Hardhat Ignition 🚀
-
-Deploying [ MembershipModule ]
-
-Batch #1
-  Executed MembershipModule#Membership
-
-Batch #2
-  Executed MembershipModule#Storage
-
-[ MembershipModule ] successfully deployed 🚀
-
-Deployed Addresses
-
-MembershipModule#Membership - 0x72950A0A9689fCA941Ddc9E1a58dcD3fb792E3D2
-MembershipModule#Storage - 0x8A7e8091e71cCB7D1EbDd773C26AD82AAd323328
-
-Verifying deployed contracts
-
-Verifying contract "contracts/Membership.sol:Membership" for network polygon...
-Contract contracts/Membership.sol:Membership already verified on network polygon:
-  - https://polygonscan.com/address/0x72950A0A9689fCA941Ddc9E1a58dcD3fb792E3D2#code
-
-Verifying contract "contracts/Storage.sol:Storage" for network polygon...
-Contract contracts/Storage.sol:Storage already verified on network polygon:
-  - https://polygonscan.com/address/0x8A7e8091e71cCB7D1EbDd773C26AD82AAd323328#code
-
-✨  Done in 69.96s.
-```
-
-### 5.2 Manual Verify
-
-`npx hardhat verify --network polygon --constructor-args ./ignition/constructor-args/$FILE.js $ADDRESS`
-
-or manually include unrelated contracts by creating or using `/ignition/constructor-args/[file].js`
-
-`npx hardhat ignition verify $DEPLOYMENT --include-unrelated-contracts`
-
-### 6 Prepare NPM Package Support
-
--   [x] Export ready to use TypeScript ABIs
--   [x] Export ready to use TypeScript deployed address config
--   [ ] ...
-
-### 6.1 TypeScript ABIs
-
-Export contract ABIs for npm package usage by copying the JSON into dedicated TypeScript files:
-
-```TS
-file: exports/abis/...
-
-export const StorageABI = [
-...
-JSON
-...
-] as const;
-```
-
-### 6.2 TypeScript Address Config
-
-Provides a mapping of contract addresses for the Membership and Storage contracts deployed on different blockchain networks.
-
-The `ADDRESS` object contains the contract addresses for the `mainnet` and `polygon` networks, with the network ID as the key.
-The `zeroAddress` is used as a placeholder for the `mainnet` network, as the contracts have not been deployed there yet.
-
-```TS
-file: exports/address.config.ts
-
-import { mainnet, polygon } from 'viem/chains';
-import { Address, zeroAddress } from 'viem';
-
-export interface ChainAddress {
-	membership: Address;
-	storage: Address;
-}
-
-export const ADDRESS: Record<number, ChainAddress> = {
-	[mainnet.id]: {
-		membership: zeroAddress,
-		storage: zeroAddress,
-	},
-	[polygon.id]: {
-		membership: '0x72950A0A9689fCA941Ddc9E1a58dcD3fb792E3D2',
-		storage: '0x8A7e8091e71cCB7D1EbDd773C26AD82AAd323328',
-	},
-};
-```
-
-# 7. TSUP and npm package
-
-### 7.1 TSUP
-
-> Config: /tsup.config.ts
-
-TSUP bundles TypeScript code into optimized JavaScript packages. This package uses TSUP to create production-ready builds.
-
-`yarn run build`
-
-### 7.2 NPM Package
-
-> **Increase Version:** Update version number in package.json using semantic versioning (e.g. 0.0.1 -> 0.0.2) before publishing new changes.
+## Project Structure
 
 ```
-file: /package.json
-
-"name": "@wrytlabs/core-template",
-"version": "0.0.1", <-- HERE
+contracts/
+├── stablecoin/         # USDU stablecoin core implementation
+├── vault/              # Vault adapters for yield generation
+├── morpho/             # Morpho protocol integration
+├── curve/              # Curve protocol integration
+├── reward/             # Reward distribution system
+└── test/               # Test contracts and utilities
 ```
 
-Login to your NPM account
+**Supported Networks:**
 
-`npm login`
+-   **Mainnet** (primary): Full protocol deployment with all contracts
+-   **L2s** (in discussion): Polygon, Arbitrum, Optimism, Base, Avalanche, Gnosis, Sonic
 
-This will publish your package to NPM with public access, making it **available for anyone to install and use**.
+> See `exports/address.types.ts` for complete chain configurations and `exports/address.config.ts` for deployed addresses.
 
-`yarn run publish`
+## Quick Start
 
-To publish new version. `publish: "npm publish --access public"`
+```bash
+# Setup
+yarn install
+cp .env.example .env  # Configure your environment
 
-> **Note**: During npm package publishing, the command may execute twice. The second execution will fail with a version conflict since the package is already published. This is expected behavior and the first publish will have succeeded.
+# Development
+yarn compile          # Compile contracts
+yarn test            # Run tests
+yarn coverage        # Test coverage
 
-### 7.3 How to transpile package into bundled apps
+# Deployment
+yarn deploy ignition/modules/StablecoinModule.ts --network mainnet --verify
 
-(not needed, since its already a true JS bundled module)
+# Package
+yarn npm:build       # Build for npm
+yarn npm:publish     # Publish package
+```
 
-E.g. for `NextJs` using the `next.config.js` in root of project.
+## Development Workflow
+
+### Environment Setup
+
+Create `.env` file (see `.env.example`):
+
+```bash
+DEPLOYER_SEED="your mnemonic here"
+DEPLOYER_SEED_INDEX=0
+ALCHEMY_RPC_KEY=your_api_key
+ETHERSCAN_API=your_api_key
+```
+
+### Testing & Building
+
+```bash
+yarn test                    # All tests
+yarn test test/Stablecoin.ts # Specific test
+yarn coverage               # Coverage report
+```
+
+### Deployment
+
+Create deployment modules in `/ignition/modules/` and parameter files in `/ignition/params/`:
+
+```bash
+yarn deploy ignition/modules/StablecoinModule.ts --network mainnet --verify --deployment-id USDU01
+```
+
+This compiles, deploys, and verifies contracts on Etherscan/Sourcify. Artifacts are saved to `/ignition/deployments/`.
+
+**Manual Verification:**
+
+```bash
+npx hardhat verify --network mainnet --constructor-args ./ignition/constructor-args/$FILE.js $ADDRESS
+npx hardhat ignition verify $DEPLOYMENT --include-unrelated-contracts
+```
+
+## NPM Package
+
+The package exports TypeScript ABIs and address configurations:
+
+**ABIs:** `exports/abis/` - Contract ABIs as TypeScript constants  
+**Addresses:** `exports/address.config.ts` - Deployed contract addresses by chain  
+**Types:** `exports/address.types.ts` - Chain configurations and type definitions
+
+```typescript
+import { ADDRESS, StablecoinABI, MorphoAdapterV1ABI } from '@usdu-finance/usdu-core';
+
+// Get mainnet addresses
+const { usduStable, usduMorphoAdapterV1_2 } = ADDRESS[1];
+
+// Use ABIs with contract instances
+const stablecoin = new Contract(usduStable, StablecoinABI, provider);
+```
+
+### Package Publishing
+
+1. **Update version** in `package.json` (semantic versioning)
+2. **Build package:** `yarn npm:build` (uses tsup config)
+3. **Publish:** `yarn npm:publish` (requires `npm login`)
+
+**Next.js Integration:**
 
 ```js
-/** @type {import('next').NextConfig} */
-const nextConfig = {
-	reactStrictMode: true,
-	transpilePackages: ['@wrtylabs/core', '@wrytelabs/api'],
+// next.config.js
+module.exports = {
+	transpilePackages: ['@usdu-finance/usdu-core'],
 };
-
-module.exports = nextConfig;
 ```
