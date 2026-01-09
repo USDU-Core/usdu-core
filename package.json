@@ -1,5 +1,5 @@
 {
-	"name": "@usdu-core/usdu-core",
+	"name": "@usdu-finance/usdu-core",
 	"version": "0.0.1",
 	"private": false,
 	"license": "GPL-3.0",
@@ -25,13 +25,13 @@
 	},
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/USDU-Core/usdu-core"
+		"url": "git+https://github.com/usdu-finance/usdu-core"
 	},
 	"keywords": [],
 	"bugs": {
-		"url": "https://github.com/USDU-Core/usdu-core/issues"
+		"url": "https://github.com/usdu-finance/usdu-core/issues"
 	},
-	"homepage": "https://github.com/USDU-Core/usdu-core#readme",
+	"homepage": "https://github.com/usdu-finance/usdu-core#readme",
 	"devDependencies": {
 		"@nomicfoundation/hardhat-chai-matchers": "^2.0.9",
 		"@nomicfoundation/hardhat-ethers": "^3.0.9",
