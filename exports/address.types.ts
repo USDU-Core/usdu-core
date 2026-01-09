@@ -61,7 +61,9 @@ export type ChainAddressMainnet = {
 	curveStableSwapNG_USDUUSDC_LP_PriceOracle: Address;
 
 	// term-max vaults
-	termmaxVaultUSDU: Address;
+	termmaxVaultUSDU_Core: Address;
+	termmaxVaultUSDU_RWA: Address;
+	termmaxVaultUSDU_Yield: Address;
 
 	// term-max adapters
 	termmaxVaultAdapterRecoverV1: Address;

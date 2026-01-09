@@ -6,7 +6,7 @@ import { mainnet } from 'viem/chains';
 
 // config and select
 export const NAME: string = 'VaultAdapterRecoverV1'; // <-- select smart contract
-export const FILE: string = 'VaultAdapterRecoverV1_TermMax'; // <-- name exported file
+export const FILE: string = 'VaultAdapterRecoverV1_TermMax_Core'; // <-- name exported file
 export const MOD: string = NAME + 'Module';
 console.log(NAME);
 
@@ -20,7 +20,7 @@ export type DeploymentParams = {
 
 export const params: DeploymentParams = {
 	stable: ADDRESS[mainnet.id].usduStable,
-	vault: ADDRESS[mainnet.id].termmaxVaultUSDU,
+	vault: ADDRESS[mainnet.id].termmaxVaultUSDU_Core,
 	receivers: [ADDRESS[mainnet.id].curator, zeroAddress, zeroAddress, zeroAddress, zeroAddress],
 	weights: [1_000_000, 0, 0, 0, 0],
 };

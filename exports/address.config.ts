@@ -1,5 +1,6 @@
 import { arbitrum, avalanche, base, gnosis, mainnet, optimism, polygon, sonic } from 'viem/chains';
 import { ChainAddressMap } from './address.types';
+import { zeroAddress } from 'viem';
 
 export const ADDRESS: ChainAddressMap = {
 	[mainnet.id]: {
@@ -60,7 +61,9 @@ export const ADDRESS: ChainAddressMap = {
 		usduCurveAdapterV1_1_USDC_2: '0x77cBb2f180F55dd2916bfC78F879A2C2dE37f638',
 
 		// term-max vaults
-		termmaxVaultUSDU: '0x18d91B5e3218AB16Ef86fB7Cb054CB48bA1e8b8e',
+		termmaxVaultUSDU_Core: '0x18d91B5e3218AB16Ef86fB7Cb054CB48bA1e8b8e',
+		termmaxVaultUSDU_RWA: zeroAddress,
+		termmaxVaultUSDU_Yield: '0xa231215C8a78E18205Ec5Ba2B52e98d99Bf43236',
 
 		// term-max adapters
 		termmaxVaultAdapterRecoverV1: '0x8F36bbEe57aCB4857CB97898020B529969FDF221',
