@@ -6,6 +6,7 @@ export * from './address.config';
 export * from './address.types';
 
 // aragon abis
+export * from './abis/aragon/AragonDao';
 export * from './abis/aragon/AragonMultiSig';
 export * from './abis/aragon/AragonDelayedAction';
 export * from './abis/aragon/AragonVetoMultiSig';

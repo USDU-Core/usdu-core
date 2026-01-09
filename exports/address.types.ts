@@ -52,6 +52,7 @@ export type ChainAddressMainnet = {
 
 	// curator
 	curator: Address;
+	aragonDao: Address;
 	aragonMultiSig: Address;
 	aragonVetoMultiSig: Address;
 	aragonDelayedAction: Address;
