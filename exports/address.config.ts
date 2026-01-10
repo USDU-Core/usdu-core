@@ -66,12 +66,12 @@ export const ADDRESS: ChainAddressMap = {
 
 		// term-max vaults
 		termmaxVaultUSDU_Core: '0x18d91B5e3218AB16Ef86fB7Cb054CB48bA1e8b8e',
-		termmaxVaultUSDU_RWA: zeroAddress,
+		termmaxVaultUSDU_RWA: '0xe0c139b915a637a519cb71c9f80cdd1f123b192e',
 		termmaxVaultUSDU_Yield: '0xa231215C8a78E18205Ec5Ba2B52e98d99Bf43236',
 
 		// term-max adapters
 		termmaxVaultAdapterRecoverV1_Core: '0x8F36bbEe57aCB4857CB97898020B529969FDF221',
-		termmaxVaultAdapterRecoverV1_RWA: zeroAddress,
+		termmaxVaultAdapterRecoverV1_RWA: '0x397FB4A34757Ac180C0841b26131F25040e2E50B',
 		termmaxVaultAdapterRecoverV1_Yield: '0x5febEFD5AeCFefB3352c5Edd49d634B1456c4bD7',
 
 		// erc20 tokens
